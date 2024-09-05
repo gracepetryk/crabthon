@@ -1,4 +1,8 @@
-Expr = Sum $
+Expr = Bool $
+Disjunction = Conjunction "or" Conjunction | Conjunction
+Conjunction = Inversion "and" Inversion | Inversion
+Inversion = "!" Comp | Comp
+Comp = Sum ("==" | "!=" | ">" | "<" | ">=" | "<=") Sum | Sum
 Sum = Term ("+" | "-") Sum | Term
 Term = Numeral ( "*" | "/" ) Term | Numeral
 Primary = NUMBER | "(" expression ")"
