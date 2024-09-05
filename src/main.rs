@@ -1,39 +1,88 @@
-use std::cell::RefCell;
+use std::{cell::RefCell, fmt::{self}};
 
 #[derive(PartialEq, Debug)]
-enum TokenType {
-    Number,
-    Operator
-}
-
-#[derive(Debug)]
-struct Token<'a> {
-    typ: TokenType,
-    val: &'a str,
+#[allow(non_camel_case_types)]
+enum Token {
+    Literal(i32),
+    STAR,
+    SLASH,
+    PLUS,
+    MINUS,
+    LeftParen,
+    RightParen
 }
 
 #[derive(Debug)]
 enum Expr {
-    Numeral(u32),
-    Sum(Box<Expr>, Box<Expr>),
-    Term(Box<Expr>, Box<Expr>)
+    Numeral(i32),
+    Sum(SumOperation, Box<Expr>, Box<Expr>),
+    Term(TermOperation, Box<Expr>, Box<Expr>)
 }
 
-
-struct SumExpr {
-    left: Box<Expr>,
-    right: Box<Expr>
+impl fmt::Display for Expr {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "digraph {{")?;
+        self._fmt(f, 0)?;
+        write!(f, "}}")
+    }
 }
 
-struct Parser<'a> {
-    tokens: Vec<Token<'a>>,
+impl Expr {
+    fn _fmt(&self, f: &mut fmt::Formatter, node_count: u32) -> fmt::Result {
+        let label = match self {
+            Expr::Numeral(v) => v.to_string(),
+            Expr::Sum(SumOperation::ADD, _, _) => "+".to_string(),
+            Expr::Sum(SumOperation::SUBTRACT, _, _) => "-".to_string(),
+            Expr::Term(TermOperation::MULTIPLY, _, _) => "*".to_string(),
+            Expr::Term(TermOperation::DIVIDE, _, _) => "/".to_string(),
+        };
+
+        println!("\"{}\" [label=\"{}\"]; ", node_count, label);
+
+        match self {
+            Expr::Sum(_, e1, e2) | Expr::Term(_, e1, e2) => {
+                e1._fmt(f, node_count*2 + 1)?;
+                e2._fmt(f, node_count*2 + 2)?;
+
+                println!("\"{}\" -> \"{}\"; ", node_count, 2 * node_count + 1);
+                println!("\"{}\" -> \"{}\"; ", node_count, 2 * node_count + 2);
+
+            },
+            _ => ()
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+enum SumOperation {
+    ADD,
+    SUBTRACT
+}
+
+#[derive(Debug)]
+enum TermOperation {
+    MULTIPLY,
+    DIVIDE
+}
+
+struct Parser {
+    tokens: Vec<Token>,
     pos: RefCell<usize>
 }
 
-type ParseResult<T> = Result<T, &'static str>;
+#[derive(Debug)]
+enum ParseError<'a> {
+    UnexpectedToken(&'a str, &'a Token),
+    MissingToken(Token),
+    ExpectedLiteral,
+}
 
-impl<'a> Parser<'a> {
-    fn new(tokens: Vec<Token<'a>>) -> Self {
+type ParseResult<'a, T> = Result<T, ParseError<'a>>;
+
+impl Parser {
+    fn new(tokens: Vec<Token>) -> Self {
         Self { tokens, pos: RefCell::new(0) }
     }
 
@@ -45,7 +94,7 @@ impl<'a> Parser<'a> {
         return (! self.is_eof()).then(|| &self.tokens[*self.pos.borrow()])
     }
 
-    fn consume(&mut self) -> Option<&Token> {
+    fn consume(&self) -> Option<&Token> {
         let tok = self.peek();
         self.next();
         return tok
@@ -55,71 +104,81 @@ impl<'a> Parser<'a> {
         self.pos.replace_with(|&mut old| old + 1);
     }
 
-    fn parse(&mut self) -> ParseResult<Expr> {
+    fn parse(&self) -> ParseResult<Expr> {
         return self.parse_sum()
     }
 
 
-    fn parse_sum(&mut self) -> ParseResult<Expr> {
-        let lhs = self.parse_term()?;
-        self.parse_binexpr(lhs, "+")
-    }
+    fn parse_sum(&self) -> ParseResult<Expr> {
+        let lh_term = self.parse_term()?;
 
-    fn parse_term(&mut self) -> ParseResult<Expr> {
-        let lhs = self.parse_numeral()?;
-        self.parse_binexpr(lhs, "*")
-    }
-
-    fn parse_numeral(&mut self) -> ParseResult<Expr> {
-        let tok = self.consume().ok_or("No Token!")?;
-
-        if tok.typ != TokenType::Number {
-            return Err("Token was not a number!");
+        let operation = match self.peek() {
+            Some(Token::PLUS) => SumOperation::ADD,
+            Some(Token::MINUS) => SumOperation::SUBTRACT,
+            _ => { return Ok(lh_term) }
         };
 
-        return Ok(Expr::Numeral(tok.val.parse().map_err(|_| "Invalid numeral.")?));
+        self.next();
+        return Ok(Expr::Sum(operation, Box::new(lh_term), Box::new(self.parse_sum()?)))
     }
 
-    fn build_binexpr(&mut self, operator: &'a str, lhs: Expr) -> ParseResult<Expr> {
-        match operator {
-            "*" => Ok(Expr::Term(Box::new(lhs), Box::new(self.parse_term()?))),
-            "+" => Ok(Expr::Sum(Box::new(lhs), Box::new(self.parse_sum()?))),
-            _ => Err("Unrecognized operator!")
-        }
+    fn parse_term(&self) -> ParseResult<Expr> {
+        let primary = self.parse_primary()?;
+
+        let operation = match self.peek() {
+            Some(Token::STAR) => TermOperation::MULTIPLY,
+            Some(Token::SLASH) => TermOperation::DIVIDE,
+            _ => { return Ok(primary) }
+        };
+
+        self.next();
+        return Ok(Expr::Term(operation, Box::new(primary), Box::new(self.parse_term()?)))
+
     }
 
-    fn parse_binexpr(&mut self, lhs: Expr, operator: &'a str) -> ParseResult<Expr> {
-        let op_maybe = self.peek();
+    fn parse_primary(&self) -> ParseResult<Expr> {
+        let tok = self.consume();
 
-        let expr = match op_maybe {
-            Some(Token{ typ: TokenType::Operator, val: op }) if *op == operator => {
-                self.next();
-                self.build_binexpr(operator, lhs)?
+        return match tok {
+            Some(Token::LeftParen) => {
+                let expr = self.parse()?;
+                match self.consume() {
+                    Some(Token::RightParen) => return Ok(expr),
+                    Some(t) => return Err(ParseError::UnexpectedToken(")", t)),
+                    _ => return Err(ParseError::MissingToken(Token::RightParen))
+                }
             },
-            None | _ => lhs
-        };
-
-        return Ok(expr)
+            Some(Token::Literal(v)) => Ok(Expr::Numeral(*v)),
+            None => Err(ParseError::ExpectedLiteral),
+            Some(t) => Err(ParseError::UnexpectedToken("Literal value", t))
+        }
     }
 }
 
-fn eval_expr(e: &Expr) -> u32 {
+fn eval_expr(e: &Expr) -> i32 {
     return match e {
         Expr::Numeral(n) => *n,
-        Expr::Term(a, b) => eval_expr(a) * eval_expr(b),
-        Expr::Sum(a, b) => eval_expr(a) + eval_expr(b),
+        Expr::Term(TermOperation::MULTIPLY, a , b)  => eval_expr(a) * eval_expr(b),
+        Expr::Term(TermOperation::DIVIDE,a , b)     => eval_expr(a) / eval_expr(b),
+        Expr::Sum(SumOperation::ADD, a, b)          => eval_expr(a) + eval_expr(b),
+        Expr::Sum(SumOperation::SUBTRACT, a, b)     => eval_expr(a) - eval_expr(b),
     }
 }
 
 fn main() {
     let expr = Parser::new(vec![
-        Token{ typ: TokenType::Number, val: "1" },
-        Token{ typ: TokenType::Operator, val: "+" },
-        Token{ typ: TokenType::Number, val: "2" },
-        Token{ typ: TokenType::Operator, val: "*" },
-        Token{ typ: TokenType::Number, val: "3" },
+        Token::Literal(1),
+        Token::STAR,
+        Token::Literal(2),
+
+        Token::PLUS,
+
+        Token::Literal(3),
+        Token::STAR,
+        Token::Literal(4),
     ]).parse().unwrap();
 
-    println!("{:?}", expr);
-    println!("{:?}", eval_expr(&expr));
+    // println!("{:?}", expr);
+    println!("{:}", expr);
+    // println!("{:?}", eval_expr(&expr));
 }
