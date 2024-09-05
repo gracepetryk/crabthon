@@ -1,0 +1,8 @@
+Expr = Sum $
+Sum = Term + Sum | Term
+Term = Numeral * Term | Numeral
+Numeral = NUMBER
+
+1 + 1
+
+
